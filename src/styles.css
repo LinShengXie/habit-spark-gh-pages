@@ -1,0 +1,170 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 20% 20%, #1f2a44, #0c1220 50%, #080c16);
+  color: #e8efff;
+}
+
+.container {
+  width: min(960px, 92vw);
+  margin: 2rem auto 4rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.panel {
+  background: rgba(13, 19, 35, 0.75);
+  border: 1px solid rgba(145, 183, 255, 0.2);
+  border-radius: 16px;
+  padding: 1rem;
+  backdrop-filter: blur(8px);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 1.8rem;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin-bottom: 0.75rem;
+}
+
+.muted {
+  color: #a8b7d8;
+  margin-top: 0.4rem;
+}
+
+.progress {
+  margin-top: 0.75rem;
+  font-weight: 600;
+  color: #d5e4ff;
+}
+
+.form label {
+  font-size: 0.95rem;
+  color: #b5c6e8;
+}
+
+.row {
+  margin-top: 0.6rem;
+  display: flex;
+  gap: 0.6rem;
+}
+
+input {
+  flex: 1;
+  background: #0f1730;
+  border: 1px solid #34476f;
+  border-radius: 10px;
+  color: #e8efff;
+  padding: 0.65rem 0.8rem;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid #87b0ff;
+  outline-offset: 2px;
+}
+
+button {
+  border: 1px solid #3f5a92;
+  background: #1c2c51;
+  color: #e8efff;
+  border-radius: 10px;
+  padding: 0.62rem 0.85rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #273c6d;
+}
+
+.habitList,
+.trendList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.habitItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(145, 183, 255, 0.25);
+  background: rgba(18, 28, 50, 0.7);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ok {
+  background: #174739;
+  border-color: #2f9270;
+}
+
+.danger {
+  background: #4a1c2a;
+  border-color: #b24a64;
+}
+
+.trendList li {
+  display: grid;
+  grid-template-columns: 110px 1fr 52px;
+  gap: 0.65rem;
+  align-items: center;
+  font-size: 0.92rem;
+}
+
+.bar {
+  height: 10px;
+  background: #141f39;
+  border: 1px solid #283a64;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar > div {
+  height: 100%;
+  background: linear-gradient(90deg, #5f9bff, #92c4ff);
+}
+
+@media (max-width: 680px) {
+  .habitItem {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .actions {
+    width: 100%;
+  }
+
+  .actions button {
+    flex: 1;
+  }
+
+  .trendList li {
+    grid-template-columns: 1fr;
+    gap: 0.4rem;
+  }
+}
