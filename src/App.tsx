@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
   apiCreateCheckin,
   apiCreateHabit,
@@ -7,10 +8,12 @@ import {
   apiGetDailyStats,
   apiGetTodayCheckins,
   apiListHabits,
+  apiUploadCheckinImage,
   getApiBaseUrl,
   type IDailyStatItem,
   type IHabitDto,
 } from "./api";
+import { removeToken } from "./auth";
 
 /** 空状态用 SVG 图标（无 emoji，符合 ui-ux-pro-max） */
 function EmptyStateIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
@@ -93,6 +96,7 @@ function habitDtoToDisplay(dto: IHabitDto): THabit {
 }
 
 export default function App() {
+  const navigate = useNavigate();
   const today = todayKey();
 
   // API 模式：习惯列表、今日打卡集合、近 7 天统计、loading、error
@@ -105,6 +109,11 @@ export default function App() {
   // 本地模式：沿用原 state
   const [localState, setLocalState] = useState<TStoredData>(() => readStorage());
   const [name, setName] = useState("");
+  /** 当日打卡配图 URL：habitId -> url[]（仅前端展示，待后端支持后可改为从接口拉取） */
+  const [checkinImageUrls, setCheckinImageUrls] = useState<Record<string, string[]>>({});
+  const [uploadingHabitId, setUploadingHabitId] = useState<number | string | null>(null);
+  const [addingHabit, setAddingHabit] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const isApiMode = useApiMode;
 
@@ -116,10 +125,16 @@ export default function App() {
       setHabits(habitList.map(habitDtoToDisplay));
       const checked = new Set<number>(todayList.filter((t) => t.checked).map((t) => t.habit_id));
       setTodayCheckedIds(checked);
+      const urlsMap: Record<string, string[]> = {};
+      todayList.forEach((t) => {
+        urlsMap[String(t.habit_id)] = t.image_urls ?? [];
+      });
+      setCheckinImageUrls(urlsMap);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setHabits([]);
       setTodayCheckedIds(new Set());
+      setCheckinImageUrls({});
     } finally {
       setLoading(false);
     }
@@ -175,12 +190,15 @@ export default function App() {
     const value = name.trim();
     if (!value) return;
     if (isApiMode) {
+      setAddingHabit(true);
+      setError(null);
       apiCreateHabit(value)
         .then(() => {
           setName("");
-          return fetchHabitsAndToday();
+          return Promise.all([fetchHabitsAndToday(), fetchDailyStats()]);
         })
-        .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setAddingHabit(false));
       return;
     }
     const next: TStoredData = {
@@ -190,14 +208,14 @@ export default function App() {
     setLocalState(next);
     writeStorage(next);
     setName("");
-  }, [name, isApiMode, localState, fetchHabitsAndToday]);
+  }, [name, isApiMode, localState, fetchHabitsAndToday, fetchDailyStats]);
 
   const handleDeleteHabit = useCallback(
     (id: number | string) => {
       if (!window.confirm("确认删除这个习惯吗？")) return;
       if (isApiMode && typeof id === "number") {
         apiDeleteHabit(id)
-          .then(() => fetchHabitsAndToday())
+          .then(() => Promise.all([fetchHabitsAndToday(), fetchDailyStats()]))
           .catch((e) => setError(e instanceof Error ? e.message : String(e)));
         return;
       }
@@ -210,19 +228,52 @@ export default function App() {
       setLocalState(next);
       writeStorage(next);
     },
-    [isApiMode, localState, fetchHabitsAndToday]
+    [isApiMode, localState, fetchHabitsAndToday, fetchDailyStats]
+  );
+
+  const habitImageKey = useCallback((id: number | string) => String(id), []);
+
+  const handleUploadImage = useCallback(
+    (habitId: number | string, file: File) => {
+      if (!isApiMode) return;
+      const key = habitImageKey(habitId);
+      setUploadingHabitId(habitId);
+      const id = typeof habitId === "number" ? habitId : parseInt(String(habitId), 10);
+      if (Number.isNaN(id)) {
+        setUploadingHabitId(null);
+        return;
+      }
+      apiUploadCheckinImage(file, id, today)
+        .then(() => fetchHabitsAndToday())
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setUploadingHabitId(null));
+    },
+    [isApiMode, habitImageKey, today, fetchHabitsAndToday]
   );
 
   const toggleCheckin = useCallback(
     (id: number | string) => {
       if (isApiMode && typeof id === "number") {
         const checked = todayCheckedIds.has(id);
+        // 乐观更新：先改本地完成状态，完成率立即刷新；请求失败再回滚
+        setTodayCheckedIds((prev) => {
+          const next = new Set(prev);
+          if (checked) next.delete(id);
+          else next.add(id);
+          return next;
+        });
         const fn = checked ? () => apiDeleteCheckin(id, today) : () => apiCreateCheckin(id, today);
         fn()
-          .then(() => {
-            fetchHabitsAndToday();
-          })
-          .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+          .then(() => Promise.all([fetchHabitsAndToday(), fetchDailyStats()]))
+          .catch((e) => {
+            setError(e instanceof Error ? e.message : String(e));
+            setTodayCheckedIds((prev) => {
+              const next = new Set(prev);
+              if (checked) next.add(id);
+              else next.delete(id);
+              return next;
+            });
+          });
         return;
       }
       const set = new Set(localState.checkinsByDate[today] ?? []);
@@ -236,8 +287,13 @@ export default function App() {
       setLocalState(next);
       writeStorage(next);
     },
-    [isApiMode, today, todayCheckedIds, localState, fetchHabitsAndToday]
+    [isApiMode, today, todayCheckedIds, localState, fetchHabitsAndToday, fetchDailyStats]
   );
+
+  const handleLogout = useCallback(() => {
+    removeToken();
+    navigate("/login", { replace: true });
+  }, [navigate]);
 
   if (isApiMode && loading) {
     return (
@@ -251,15 +307,24 @@ export default function App() {
 
   return (
     <main className="container" role="main">
+      {isApiMode && (
+        <nav className="panel nav-bar" aria-label="主导航">
+          <span className="muted">Habit Spark</span>
+          <div className="nav-bar__actions">
+            <Link to="/profile" className="nav-link">个人中心</Link>
+            <button type="button" className="danger" onClick={handleLogout} aria-label="登出">登出</button>
+          </div>
+        </nav>
+      )}
       {isApiMode && error && (
-        <div className="panel" style={{ background: "rgba(248,113,113,0.15)", borderColor: "var(--danger)" }}>
-          <p style={{ margin: 0, color: "var(--danger)" }}>{error}</p>
+        <div className="panel error-banner" role="alert" aria-live="assertive">
+          <p className="error-banner__text">{error}</p>
         </div>
       )}
-      <header className="panel">
-        <h1>Habit Spark</h1>
-        <p className="muted">本地优先、可直接部署到 GitHub Pages 的习惯打卡项目。</p>
-        <div className="header__progress" aria-live="polite" aria-atomic="true">
+      <header className="panel page-header">
+        <h1 className="page-header__title">Habit Spark</h1>
+        <p className="page-header__subtitle">记录习惯，每日打卡</p>
+        <div className="page-header__progress" aria-live="polite" aria-atomic="true">
           <span
             className={`progress-pill ${completionRate === 100 && displayHabits.length > 0 ? "progress-pill--full" : ""}`}
             aria-label={`今日进度 ${todayDoneCount} 共 ${displayHabits.length}，完成率 ${completionRate}%`}
@@ -269,10 +334,10 @@ export default function App() {
         </div>
       </header>
 
-      <section className="panel form" aria-labelledby="form-heading">
+      <section className="panel add-habit" aria-labelledby="form-heading">
         <h2 id="form-heading" className="visually-hidden">添加新习惯</h2>
-        <label htmlFor="habitName">新习惯</label>
-        <div className="row">
+        <label htmlFor="habitName" className="add-habit__label">新习惯</label>
+        <div className="add-habit__row">
           <input
             id="habitName"
             type="text"
@@ -281,34 +346,74 @@ export default function App() {
             onKeyDown={(e) => e.key === "Enter" && handleAddHabit()}
             placeholder="例如：晚饭后散步 20 分钟"
             maxLength={64}
+            className="add-habit__input"
           />
-          <button type="button" className="btn--primary" onClick={handleAddHabit} disabled={!name.trim()}>
-            添加
+          <button
+            type="button"
+            className="btn--primary add-habit__submit"
+            onClick={handleAddHabit}
+            disabled={!name.trim() || addingHabit}
+            aria-busy={addingHabit}
+          >
+            {addingHabit ? "添加中…" : "添加"}
           </button>
         </div>
       </section>
 
-      <section className="panel" aria-labelledby="habit-list-heading">
-        <h2 id="habit-list-heading">习惯列表</h2>
+      <section className="panel habit-section" aria-labelledby="habit-list-heading">
+        <h2 id="habit-list-heading" className="habit-section__title">习惯列表</h2>
         {displayHabits.length === 0 ? (
           <div className="empty-state">
             <EmptyStateIcon className="empty-state__icon" aria-hidden />
             <p>还没有习惯，在上方输入名称并点击「添加」开始吧。</p>
           </div>
         ) : (
-          <ul className="habitList">
+          <ul className="habit-list">
             {displayHabits.map((habit) => {
               const checked = displayTodayChecked.has(habit.id);
+              const key = habitImageKey(habit.id);
+              const urls = checkinImageUrls[key] ?? [];
+              const isUploading = uploadingHabitId === habit.id;
               return (
-                <li key={habit.id} className="habitItem">
-                  <div>
-                    <strong>{habit.name}</strong>
-                    <p className="muted">创建于 {new Date(habit.createdAt).toLocaleString()}</p>
+                <li key={habit.id} className="habit-card">
+                  <div className="habit-card__main">
+                    <h3 className="habit-card__name">{habit.name}</h3>
+                    <p className="habit-card__meta">创建于 {new Date(habit.createdAt).toLocaleString()}</p>
+                    {isApiMode && (checked || urls.length > 0) && (
+                      <div className="habit-card__media">
+                        <div className="habit-card__thumbs">
+                          {urls.map((url) => (
+                            <button
+                              key={url}
+                              type="button"
+                              className="habit-card__thumb"
+                              onClick={() => setPreviewUrl(url)}
+                              aria-label="预览打卡配图"
+                            >
+                              <img src={url} alt="打卡配图缩略图" loading="lazy" />
+                            </button>
+                          ))}
+                        </div>
+                        <label className={`habit-card__add-image ${isUploading ? "is-busy" : ""}`}>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/gif,image/webp"
+                            disabled={isUploading}
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) handleUploadImage(habit.id, f);
+                              e.target.value = "";
+                            }}
+                          />
+                          {isUploading ? "上传中…" : "添加配图"}
+                        </label>
+                      </div>
+                    )}
                   </div>
-                  <div className="actions">
+                  <div className="habit-card__actions">
                     <button
                       type="button"
-                      className={checked ? "ok" : ""}
+                      className={`habit-card__btn ${checked ? "habit-card__btn--done" : ""}`}
                       onClick={() => toggleCheckin(habit.id)}
                       aria-pressed={checked}
                       aria-label={checked ? `取消今日打卡：${habit.name}` : `今日打卡：${habit.name}`}
@@ -317,7 +422,7 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      className="danger"
+                      className="habit-card__btn habit-card__btn--danger"
                       onClick={() => handleDeleteHabit(habit.id)}
                       aria-label={`删除习惯：${habit.name}`}
                     >
@@ -345,6 +450,28 @@ export default function App() {
           ))}
         </ul>
       </section>
+
+      {previewUrl && (
+        <div
+          className="image-preview"
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片预览"
+          onClick={() => setPreviewUrl(null)}
+        >
+          <div className="image-preview__dialog" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="image-preview__close"
+              onClick={() => setPreviewUrl(null)}
+              aria-label="关闭预览"
+            >
+              关闭
+            </button>
+            <img src={previewUrl} alt="打卡配图预览" className="image-preview__img" />
+          </div>
+        </div>
+      )}
     </main>
   );
 }
